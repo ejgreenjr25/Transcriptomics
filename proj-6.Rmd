@@ -1,0 +1,437 @@
+---
+title: "proj"
+output:
+  pdf_document: default
+  html_document: default
+date: "2024-08-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+
+```{r}
+#load proper library
+library(GEOquery)
+
+# Import data from GSE series matrix files (Our entry had 2 of them)
+rawdata = getGEO("GSE124742",filename = "GSE124742-GPL24676_series_matrix.txt.gz")
+#rawdata = getGEO("GSE124742", GSEMatrix=TRUE)
+rawdata2 = getGEO("GSE124742",filename = "GSE124742-GPL18573_series_matrix.txt.gz")
+# Import count data from tab file
+rawcounts = read.table("GSE124742_All_human.counts.tab", check.names = "False")
+```
+```{r}
+#load proper library
+library(Biobase)
+
+# Combine the imported GEO data 
+rawdatacombine = Biobase::combine(rawdata@phenoData, rawdata2@phenoData)
+
+# Subset metadata to only columns of importance
+metadata = rawdatacombine@data
+submetadata = metadata[c("title", "geo_accession","patched:ch1","diabetes:ch1", "cryopreserved:ch1")]
+```
+
+```{r}
+library(tidyr)
+
+# Remove entries with "empty well"
+submetadata_clean = submetadata[- grep("empty_well_or_discarded_patchclamp", submetadata$`diabetes:ch1`),]
+
+# Remove gene entries from metadata that don't have count data
+submetadata_clean =  submetadata_clean[colnames(rawcounts) %in% submetadata_clean$title, ] 
+
+# Rename entries with nonstandard text (TD2reversed to T2D, cyroT1D to T1D, etc.)
+submetadata_clean$'diabetes:ch1'[grepl("T1D", submetadata_clean$'diabetes:ch1')] <- "T1D"
+submetadata_clean$'diabetes:ch1'[grepl("nondiabetic", submetadata_clean$'diabetes:ch1')] <- "nondiabetic"
+
+# Rename patch seq to be clearer
+submetadata_clean$'patched:ch1'[grepl("No", submetadata_clean$'patched:ch1')] <- "Neither"
+submetadata_clean$'patched:ch1'[grepl("Yes", submetadata_clean$'patched:ch1')] <- "PatchSeq"
+
+#Drop entries with unwanted indentifiers
+submetadata_clean = submetadata_clean[- grep("Parkinson", submetadata_clean$`diabetes:ch1`),]
+submetadata_clean = submetadata_clean[- grep("reversed", submetadata_clean$`diabetes:ch1`),]
+
+# Change row names to titles to match countdata file
+rownames(submetadata_clean) = submetadata_clean$title
+submetadata_clean = submetadata_clean[-1]
+
+# Drop any remaining NA 
+submetadata_clean = drop_na(submetadata_clean)
+```
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+
+
+# Define the groups using the correct column names
+groups <- list(
+  "Nondiabetic_Neither" = submetadata_clean %>% filter(`diabetes:ch1` == "nondiabetic" & `patched:ch1` == "Neither"),
+  "Nondiabetic_PatchSeq" = submetadata_clean %>% filter(`diabetes:ch1` == "nondiabetic" & `patched:ch1` == "PatchSeq"),
+ # "Nondiabetic_Cryopreserved" = submetadata_clean %>% filter(`diabetes:ch1` == "nondiabetic" & `cryopreserved:ch1` == "Yes"),
+  "Nondiabetic_FACS" = submetadata_clean %>% filter(`diabetes:ch1` == "nondiabetic" & `patched:ch1` == "FACS"),
+# "TypeI_Cryopreserved" = submetadata_clean %>% filter(`diabetes:ch1` == "T1D" & `cryopreserved:ch1` == "Yes"),
+
+  "TypeI_FACS" = submetadata_clean %>% filter(`diabetes:ch1` == "T1D" & `patched:ch1` == "FACS"),
+  "TypeI_PatchSeq" = submetadata_clean %>% filter(`diabetes:ch1` == "T1D" & `patched:ch1` == "PatchSeq"),
+  "TypeI_Neither" = submetadata_clean %>% filter(`diabetes:ch1` == "T1D" & `patched:ch1` == "Neither"),
+
+  "TypeII_PatchSeq" = submetadata_clean %>% filter(`diabetes:ch1` == "T2D" & `patched:ch1` == "PatchSeq"),
+  "TypeII_FACS" = submetadata_clean %>% filter(`diabetes:ch1` == "T2D" & `patched:ch1` == "FACS"),
+  "TypeII_Neither" = submetadata_clean %>% filter(`diabetes:ch1` == "T2D" & `patched:ch1` == "Neither")
+)
+
+# Sample 50 samples from each group
+sampled_groups <- lapply(groups, function(group) {
+  if (nrow(group) >= 50) {
+    sample_n(group, 50)
+  } else {
+    group
+  }
+})
+
+# Combine the samples into one dataframe
+sampled_metadata <- bind_rows(sampled_groups)
+
+# Display the resulting sampled data
+head(sampled_metadata)
+
+
+```
+
+```{r}
+# Print out categories and number of entries in them
+d_counts <- table(submetadata_clean$'diabetes:ch1')
+print(d_counts)
+
+p_counts <- table(submetadata_clean$'patched:ch1')
+print(p_counts)
+
+c_counts <- table(submetadata_clean$'cryopreserved:ch1')
+print(c_counts)
+
+```
+
+
+```{r}
+#rawcounts = read.table("GSE124742_All_human.counts.tab", check.names = "False")
+
+```
+
+```{r}
+sample_names <- rownames(sampled_metadata)
+
+```
+
+
+
+```{r}
+# Subset the count data to just our subset of samples
+rawcounts_sub <- rawcounts[, sample_names]
+
+```
+
+
+```{r}
+library(dplyr)
+library(DESeq2)
+
+# Rename columns to avoid special characters
+colnames(sampled_metadata)[colnames(sampled_metadata) == "patched:ch1"] <- "patched"
+colnames(sampled_metadata)[colnames(sampled_metadata) == "diabetes:ch1"] <- "diabetes_status"
+
+# Set factor levels
+#sampled_metadata$patched <- factor(sampled_metadata$patched)
+sampled_metadata$diabetes_status <- factor(sampled_metadata$diabetes_status, levels = c("nondiabetic", "T1D", "T2D"))
+sampled_metadata$patched <- factor(sampled_metadata$patched, levels = c("Neither", "FACS", "PatchSeq"))
+
+# Set design formula for DESeq2
+design <- ~ patched + diabetes_status 
+
+# Create DESeqDataSet
+dds <- DESeqDataSetFromMatrix(countData = rawcounts_sub, colData = sampled_metadata, design = design)
+
+
+
+
+
+```
+
+
+```{r}
+
+# Add a pseudocount of 1 to allow DESEq to run on data with many 0s
+counts_with_pseudocount <- rawcounts_sub + 1
+
+
+```
+```{r}
+# Reduce dataset size to speed up processing
+keep <- rowSums(counts(dds)>10) >= min(table(sampled_metadata$diabetes_status)) 
+
+dds <- dds[keep,]
+```
+
+```{r}
+# Create our dataset matrix for DESeq to run on
+#
+dds <- DESeqDataSetFromMatrix(countData = rawcounts_sub, 
+                              colData = sampled_metadata, 
+                              design = design)
+
+```
+
+```{r}
+# Identify the sample with the NA size factor
+size_factors = sizeFactors(dds)
+na_sample <- colnames(dds)[is.na(size_factors)]
+cat("Problematic sample:", na_sample, "\n")
+
+# Remove the problematic sample from the dataset
+dds_clean <- dds[, !colnames(dds) %in% na_sample]
+
+# Estimate size factors using the poscounts method on the cleaned dataset
+dds_clean <- estimateSizeFactors(dds_clean, type = "poscounts")
+
+# Proceed with the DESeq2 analysis using parameters tuned for Single Cell Datasets
+dds_clean <- DESeq(dds_clean, useT=True, minmu=1e-6, minReplicatesForReplace=Inf, test = "LRT", reduced =~diabetes_status)
+
+# Obtain DESeq2 results with the default settings
+res <- results(dds_clean)
+
+
+
+
+```
+```{r}
+# Check results categories
+resultsNames(dds_clean)
+```
+
+
+
+```{r}
+# Check dispersions and plot
+summary(dispersions(dds))
+plotDispEsts(dds_clean)
+```
+```{r}
+# Separate out results for Type 1 vs control and Type 2 vs control
+T1_res = results(dds_clean, name="diabetes_status_T1D_vs_nondiabetic", alpha=0.5, pAdjustMethod = "fdr")
+T2_res = results(dds_clean, name="diabetes_status_T2D_vs_nondiabetic", alpha=0.5, pAdjustMethod = "fdr")
+
+# Print results summaries
+summary(T1_res)
+summary(T2_res)
+
+# Base MA plots
+plotMA(T1_res, ylim=c(-4,4), main = "T1 vs Nondiabetic LFC")
+plotMA(T2_res, ylim=c(-4,4), main = "T2 vs Nondiabetic LFC")
+```
+Perform LFC shrinkage for visualization 
+
+```{r}
+library(apeglm)
+
+# Shrink LFC effect sizes using apeglm
+res1LFC <- lfcShrink(dds_clean, coef = "diabetes_status_T1D_vs_nondiabetic", type = "apeglm")
+res2LFC <- lfcShrink(dds_clean, coef = "diabetes_status_T2D_vs_nondiabetic", type = "apeglm")
+
+# Plot new MA plots
+plotMA(res1LFC, ylim=c(-6,6), main = "Shrunk T1 vs Nondiabetic LFC")
+plotMA(res2LFC, ylim=c(-6,6), main = "Shunk T2 vs Nondiabetic LFC")
+```
+Pull Differentially Expressed Genes
+```{r}
+# Diffentially expressed genes that pass adj p-value and LFC thresholds
+diffexpT1 = subset(res1LFC, padj < 0.5 & (log2FoldChange > 1 | log2FoldChange < -1))
+diffexpT2 = subset(res2LFC, padj < 0.5 & (log2FoldChange > 1 | log2FoldChange < -1))
+
+library(gplots)
+# Create a Venn-diagram of the diff expressed genes
+venn(list("T1 vs Nondiabetic" = diffexpT1@rownames,
+          "T2 vs Nondiabetic" = diffexpT2@rownames), )
+```
+```{r}
+library(GeneOverlap)
+overlap = newGeneOverlap(diffexpT1@rownames, diffexpT2@rownames, genome.size = length(res2LFC@rownames))
+
+overlap = testGeneOverlap(overlap)
+print(overlap)
+```
+
+Volcano Plots for LFC 
+
+```{r}
+library(EnhancedVolcano)
+
+## Simple function for plotting a Volcano plot, returns a ggplot object
+deseq.volcano <- function(res, datasetName) {
+  return(EnhancedVolcano(res, x = 'log2FoldChange', y = 'padj',
+                         lab=rownames(res),
+                         title = paste(datasetName, " vs nondiabetic"),
+                         subtitle = bquote(italic('FDR <= 0.05 and absolute FC >= 1')),
+                         # Change text and icon sizes
+                         labSize = 3, pointSize = 1.5, axisLabSize=10, titleLabSize=12,
+                         subtitleLabSize=8, captionLabSize=10,
+                         # Disable legend
+                         legendPosition = "none",
+                         # Set cutoffs
+                         pCutoff = 0.01, FCcutoff = 1))
+}
+
+# Generate LFC Volcano plots using our shrunk DESeq output
+deseq.volcano(res = res1LFC, datasetName = "T1")
+deseq.volcano(res = res2LFC, datasetName = "T2")
+```
+
+```{r}
+# Print head of diff expressed genes for comparison
+T1_dex_ordered <- diffexpT1[order(diffexpT1$pvalue),]
+head(T1_dex_ordered)
+T2_dex_ordered <- diffexpT2[order(diffexpT2$pvalue),]
+head(T2_dex_ordered)
+```
+
+```{r}
+#make normalized counts
+normalized_counts <- counts(dds_clean,normalized=TRUE)
+#head(normalized_counts)
+```
+
+
+```{r}
+library(ggplot2)
+#variance stabalizing transformation
+vsd <- vst(dds_clean,blind = FALSE)
+plotPCA(vsd, intgroup = c("patched","diabetes_status"))
+```
+```{r}
+#Heatmap of sample-to-sample distance matrix (with clustering) based on normalized counts
+#generate the distance matrix
+library(pheatmap)
+library(RColorBrewer)
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+colnames(sampleDistMatrix)
+#set a color scheme
+colors <- colorRampPalette(rev(brewer.pal(9,"Greens")))(255)
+#generate heatmap
+pheatmap(sampleDistMatrix,clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists, col = colors, show_rownames = FALSE, show_colnames = FALSE)
+```
+```{r}
+#heatmap of log transformed normalized counts. We will use top 10 genes
+top_hits <- res[order(res$pvalue),][1:10,] 
+top_hits <- row.names(top_hits)
+top_hits
+rld <- vst(dds_clean,blind=FALSE)
+pheatmap(assay(rld)[top_hits,],cluster_rows = TRUE,cluster_cols = TRUE, show_colnames = FALSE)
+```
+```{r}
+# Correctly subset the columns
+annot_info <- as.data.frame(colData(dds_clean)[, c("patched", "diabetes_status")])
+
+annot_info$patched <- factor(annot_info$patched)
+annot_info$diabetes_status <- factor(annot_info$diabetes_status)
+
+
+# Overall heatmaps of T1 and T2 differentially expressed genes
+# Columns were unable to be clustered due to inability to calculate distance matrix 
+pheatmap(assay(rld)[row.names(diffexpT1), ], 
+         cluster_rows = TRUE, 
+         show_rownames = FALSE, 
+         cluster_cols = TRUE, 
+         clustering_distance_rows = "correlation",
+         show_colnames = FALSE,
+         annotation_col = annot_info)
+
+pheatmap(assay(rld)[row.names(diffexpT2), ], 
+         cluster_rows = TRUE, 
+         show_rownames = FALSE, 
+         cluster_cols = TRUE, 
+         clustering_distance_rows = "correlation",
+         show_colnames = FALSE,
+         annotation_col = annot_info)
+
+
+```
+
+
+```{r go-analysis, message=FALSE, warning=FALSE}
+# Load required packages
+library(GOstats)
+library(GO.db)
+library(org.Hs.eg.db)
+library(Category)
+library(AnnotationDbi)
+
+```
+
+```{r}
+library(knitr)
+
+# Convert Gene Symbols to Entrez IDs for GO Search
+T1_gene_list <- mapIds(org.Hs.eg.db, keys = diffexpT1@rownames,
+        column = "ENTREZID", keytype = "SYMBOL")
+
+T2_gene_list <- mapIds(org.Hs.eg.db, keys = diffexpT2@rownames,
+        column = "ENTREZID", keytype = "SYMBOL")
+
+universe_gene_list = mapIds(org.Hs.eg.db, keys = rownames(dds_clean),
+        column = "ENTREZID", keytype = "SYMBOL")
+
+# Search T1 and T2 diffexp genes for GO terms
+T1params <- new("GOHyperGParams",
+                       geneIds = T1_gene_list,
+                       universeGeneIds = universe_gene_list,
+                       annotation = "org.Hs.eg.db",
+                       ontology = "BP",
+                       pvalueCutoff = 0.1,
+                       conditional = FALSE,
+                       testDirection = "over")
+
+T2params <- new("GOHyperGParams",
+                       geneIds = T2_gene_list,
+                       universeGeneIds = universe_gene_list,
+                       annotation = "org.Hs.eg.db",
+                       ontology = "BP",
+                       pvalueCutoff = 0.1,
+                       conditional = FALSE,
+                       testDirection = "over")
+
+# Save our results
+T1_go_results <- hyperGTest(T1params)
+T2_go_results <- hyperGTest(T2params)
+
+```
+```{r}
+# Full GO Results
+#print(summary(T1_go_results, categorySize =))
+#print(summary(T1_go_results, categorySize =))
+```
+
+
+```{r}
+# Top GO Terms 
+kable(head(summary(T1_go_results))[,c(7,1,2,5,6)])
+kable(head(summary(T2_go_results))[,c(7,1,2,5,6)])
+```
+
+
+
+
+
+
+
+
